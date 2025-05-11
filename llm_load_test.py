@@ -166,55 +166,93 @@ class LLMLoadTester:
         self.results = []
 
     def send_request(self):
-        """Send a single request to the API and measure time"""
+        """Send a single request to the API and measure time including TTFT"""
         start_time = time.time()
+        first_byte_time = None
         
         payload = {
             "model": self.model,
             "prompt": self.prompt,
             "max_tokens": self.max_tokens,
-            "temperature": self.temperature
+            "temperature": self.temperature,
+            "stream": True  # Enable streaming to measure TTFT
         }
         
         headers = {"Content-Type": "application/json"}
         
         try:
-            response = requests.post(
+            # For TTFT measurement we need streaming mode
+            with requests.post(
                 self.endpoint,
                 headers=headers,
                 data=json.dumps(payload),
-                timeout=60
-            )
-            
-            response_time = time.time() - start_time
-            status_code = response.status_code
-            
-            if status_code == 200:
-                # Try to extract token count from response if possible
-                response_json = response.json()
-                tokens_generated = 0
+                timeout=60,
+                stream=True
+            ) as response:
+                status_code = response.status_code
                 
-                if "choices" in response_json and response_json["choices"]:
-                    if "text" in response_json["choices"][0]:
-                        tokens_generated = len(response_json["choices"][0]["text"].split())
-                
-                return {
-                    "success": True,
-                    "latency": response_time,
-                    "tokens_generated": tokens_generated,
-                    "status_code": status_code
-                }
-            else:
-                return {
-                    "success": False,
-                    "latency": response_time,
-                    "status_code": status_code,
-                    "error": response.text
-                }
+                if status_code == 200:
+                    content = ""
+                    for chunk in response.iter_content(chunk_size=1):
+                        # Record time of first byte
+                        if first_byte_time is None and chunk:
+                            first_byte_time = time.time()
+                        content += chunk.decode('utf-8', errors='ignore')
+                    
+                    # If streaming didn't work, fall back to normal request
+                    if first_byte_time is None:
+                        first_byte_time = time.time()
+                    
+                    # Calculate metrics
+                    ttft = first_byte_time - start_time
+                    response_time = time.time() - start_time
+                    
+                    # Parse the response content
+                    try:
+                        response_json = json.loads(content)
+                    except json.JSONDecodeError:
+                        # If streaming response is not valid JSON, try again with non-streaming
+                        payload["stream"] = False
+                        response = requests.post(
+                            self.endpoint,
+                            headers=headers,
+                            data=json.dumps(payload),
+                            timeout=60
+                        )
+                        response_json = response.json()
+                    
+                    # Extract token count
+                    tokens_generated = 0
+                    if "choices" in response_json and response_json["choices"]:
+                        if "text" in response_json["choices"][0]:
+                            tokens_generated = len(response_json["choices"][0]["text"].split())
+                    
+                    # Calculate latency per token
+                    latency_per_token = 0
+                    if tokens_generated > 0:
+                        latency_per_token = (response_time - ttft) / tokens_generated
+                    
+                    return {
+                        "success": True,
+                        "latency": response_time,
+                        "ttft": ttft,
+                        "tokens_generated": tokens_generated,
+                        "latency_per_token": latency_per_token,
+                        "status_code": status_code
+                    }
+                else:
+                    return {
+                        "success": False,
+                        "latency": time.time() - start_time,
+                        "ttft": None,
+                        "status_code": status_code,
+                        "error": response.text
+                    }
         except Exception as e:
             return {
                 "success": False,
                 "latency": time.time() - start_time,
+                "ttft": None,
                 "error": str(e)
             }
 
@@ -274,6 +312,29 @@ class LLMLoadTester:
             p99 = np.percentile(latencies, 99)
             avg_latency = np.mean(latencies)
             
+            # Time to First Token metrics
+            if "ttft" in successful_requests[0] and successful_requests[0]["ttft"]:
+                ttfts = [r["ttft"] for r in successful_requests if r.get("ttft")]
+                avg_ttft = np.mean(ttfts)
+                p50_ttft = np.percentile(ttfts, 50)
+                p90_ttft = np.percentile(ttfts, 90)
+                p99_ttft = np.percentile(ttfts, 99)
+            else:
+                avg_ttft = p50_ttft = p90_ttft = p99_ttft = "N/A"
+            
+            # Per token latency metrics
+            if "latency_per_token" in successful_requests[0]:
+                per_token_latencies = [r["latency_per_token"] for r in successful_requests 
+                                    if r.get("latency_per_token") and r.get("tokens_generated", 0) > 0]
+                if per_token_latencies:
+                    avg_latency_per_token = np.mean(per_token_latencies)
+                    p50_latency_per_token = np.percentile(per_token_latencies, 50)
+                    p90_latency_per_token = np.percentile(per_token_latencies, 90)
+                else:
+                    avg_latency_per_token = p50_latency_per_token = p90_latency_per_token = "N/A"
+            else:
+                avg_latency_per_token = p50_latency_per_token = p90_latency_per_token = "N/A"
+            
             if "tokens_generated" in successful_requests[0]:
                 tokens = [r["tokens_generated"] for r in successful_requests]
                 avg_tokens = np.mean(tokens)
@@ -282,13 +343,15 @@ class LLMLoadTester:
                 avg_tokens = "N/A"
                 tokens_per_second = "N/A"
         else:
-            p50, p90, p99, avg_latency = 0, 0, 0, 0
-            avg_tokens, tokens_per_second = "N/A", "N/A"
+            p50 = p90 = p99 = avg_latency = 0
+            avg_ttft = p50_ttft = p90_ttft = p99_ttft = "N/A"
+            avg_latency_per_token = p50_latency_per_token = p90_latency_per_token = "N/A"
+            avg_tokens = tokens_per_second = "N/A"
         
         # Print report
-        print("\n" + "="*50)
+        print("\n" + "="*70)
         print("LOAD TEST RESULTS")
-        print("="*50)
+        print("="*70)
         print(f"Total requests: {len(self.results)}")
         print(f"Successful requests: {len(successful_requests)} ({success_rate:.2f}%)")
         print(f"Failed requests: {len(failed_requests)}")
@@ -296,11 +359,29 @@ class LLMLoadTester:
         print(f"Requests per second (RPS): {rps:.2f}")
         print(f"Average tokens per response: {avg_tokens}")
         print(f"Tokens per second (throughput): {tokens_per_second}")
+        
         print("\nLatency statistics (milliseconds):")
         print(f"  Average: {avg_latency*1000:.2f} ms")
         print(f"  P50: {p50*1000:.2f} ms")
         print(f"  P90: {p90*1000:.2f} ms")
         print(f"  P99: {p99*1000:.2f} ms")
+        
+        print("\nTime To First Token (TTFT) statistics (milliseconds):")
+        if isinstance(avg_ttft, float):
+            print(f"  Average: {avg_ttft*1000:.2f} ms")
+            print(f"  P50: {p50_ttft*1000:.2f} ms")
+            print(f"  P90: {p90_ttft*1000:.2f} ms")
+            print(f"  P99: {p99_ttft*1000:.2f} ms")
+        else:
+            print(f"  TTFT metrics not available")
+        
+        print("\nLatency per token statistics (milliseconds/token):")
+        if isinstance(avg_latency_per_token, float):
+            print(f"  Average: {avg_latency_per_token*1000:.2f} ms/token")
+            print(f"  P50: {p50_latency_per_token*1000:.2f} ms/token")
+            print(f"  P90: {p90_latency_per_token*1000:.2f} ms/token")
+        else:
+            print(f"  Latency per token metrics not available")
         
         if failed_requests:
             error_counts = {}
@@ -314,7 +395,7 @@ class LLMLoadTester:
             for error, count in error_counts.items():
                 print(f"  - {error}: {count} occurrences")
         
-        print("="*50)
+        print("="*70)
         
         # Save results to file if specified
         if output_file:
@@ -335,10 +416,21 @@ class LLMLoadTester:
                     "avg_tokens_per_response": avg_tokens,
                     "tokens_per_second": tokens_per_second,
                     "latency_ms": {
-                        "average": avg_latency * 1000,
-                        "p50": p50 * 1000,
-                        "p90": p90 * 1000,
-                        "p99": p99 * 1000
+                        "average": avg_latency * 1000 if isinstance(avg_latency, float) else avg_latency,
+                        "p50": p50 * 1000 if isinstance(p50, float) else p50,
+                        "p90": p90 * 1000 if isinstance(p90, float) else p90,
+                        "p99": p99 * 1000 if isinstance(p99, float) else p99
+                    },
+                    "ttft_ms": {
+                        "average": avg_ttft * 1000 if isinstance(avg_ttft, float) else avg_ttft,
+                        "p50": p50_ttft * 1000 if isinstance(p50_ttft, float) else p50_ttft,
+                        "p90": p90_ttft * 1000 if isinstance(p90_ttft, float) else p90_ttft,
+                        "p99": p99_ttft * 1000 if isinstance(p99_ttft, float) else p99_ttft
+                    },
+                    "latency_per_token_ms": {
+                        "average": avg_latency_per_token * 1000 if isinstance(avg_latency_per_token, float) else avg_latency_per_token,
+                        "p50": p50_latency_per_token * 1000 if isinstance(p50_latency_per_token, float) else p50_latency_per_token,
+                        "p90": p90_latency_per_token * 1000 if isinstance(p90_latency_per_token, float) else p90_latency_per_token
                     }
                 },
                 "raw_results": self.results
@@ -354,7 +446,7 @@ class LLMLoadTester:
     def plot_results(self, output_file):
         """Generate plots for load test results"""
         try:
-            # Extract latencies from successful requests
+            # Extract data from successful requests
             successful = [r for r in self.results if r["success"]]
             if not successful:
                 print("No successful requests to plot")
@@ -362,25 +454,99 @@ class LLMLoadTester:
                 
             latencies = [r["latency"] * 1000 for r in successful]  # Convert to ms
             
-            # Create distribution plot
-            plt.figure(figsize=(10, 6))
-            plt.hist(latencies, bins=30, alpha=0.7, color='blue')
-            plt.axvline(np.mean(latencies), color='red', linestyle='dashed', linewidth=1, 
-                     label=f'Mean: {np.mean(latencies):.2f} ms')
-            plt.axvline(np.percentile(latencies, 90), color='green', linestyle='dashed', linewidth=1,
-                     label=f'p90: {np.percentile(latencies, 90):.2f} ms')
-            plt.axvline(np.percentile(latencies, 99), color='orange', linestyle='dashed', linewidth=1,
-                     label=f'p99: {np.percentile(latencies, 99):.2f} ms')
+            # Extract TTFT data if available
+            has_ttft = "ttft" in successful[0] and successful[0]["ttft"] is not None
+            if has_ttft:
+                ttfts = [r["ttft"] * 1000 for r in successful if r.get("ttft") is not None]  # Convert to ms
             
-            plt.title('Response Latency Distribution')
-            plt.xlabel('Latency (ms)')
-            plt.ylabel('Number of Requests')
-            plt.legend()
-            plt.grid(True, alpha=0.3)
+            # Extract per-token latency data if available
+            has_per_token = "latency_per_token" in successful[0] and successful[0]["latency_per_token"] is not None
+            if has_per_token:
+                per_token_latencies = [r["latency_per_token"] * 1000 for r in successful 
+                                      if r.get("latency_per_token") is not None 
+                                      and r.get("tokens_generated", 0) > 0]  # Convert to ms
             
-            plot_file = output_file.replace('.json', '_latency.png')
+            # Create subplot layout based on available metrics
+            num_plots = 1 + int(has_ttft) + int(has_per_token)
+            fig, axs = plt.subplots(num_plots, 1, figsize=(12, 5 * num_plots))
+            
+            if num_plots == 1:
+                axs = [axs]  # Make axs a list for indexing when there's only one plot
+            
+            # Plot 1: Total Latency Distribution
+            ax_idx = 0
+            axs[ax_idx].hist(latencies, bins=30, alpha=0.7, color='blue')
+            axs[ax_idx].axvline(np.mean(latencies), color='red', linestyle='dashed', linewidth=1, 
+                              label=f'Mean: {np.mean(latencies):.2f} ms')
+            axs[ax_idx].axvline(np.percentile(latencies, 90), color='green', linestyle='dashed', linewidth=1,
+                              label=f'p90: {np.percentile(latencies, 90):.2f} ms')
+            axs[ax_idx].axvline(np.percentile(latencies, 99), color='orange', linestyle='dashed', linewidth=1,
+                              label=f'p99: {np.percentile(latencies, 99):.2f} ms')
+            
+            axs[ax_idx].set_title('Response Latency Distribution')
+            axs[ax_idx].set_xlabel('Latency (ms)')
+            axs[ax_idx].set_ylabel('Number of Requests')
+            axs[ax_idx].legend()
+            axs[ax_idx].grid(True, alpha=0.3)
+            
+            # Plot 2: Time to First Token (TTFT) Distribution
+            if has_ttft:
+                ax_idx += 1
+                axs[ax_idx].hist(ttfts, bins=30, alpha=0.7, color='green')
+                axs[ax_idx].axvline(np.mean(ttfts), color='red', linestyle='dashed', linewidth=1, 
+                                  label=f'Mean: {np.mean(ttfts):.2f} ms')
+                axs[ax_idx].axvline(np.percentile(ttfts, 90), color='blue', linestyle='dashed', linewidth=1,
+                                  label=f'p90: {np.percentile(ttfts, 90):.2f} ms')
+                
+                axs[ax_idx].set_title('Time to First Token (TTFT) Distribution')
+                axs[ax_idx].set_xlabel('TTFT (ms)')
+                axs[ax_idx].set_ylabel('Number of Requests')
+                axs[ax_idx].legend()
+                axs[ax_idx].grid(True, alpha=0.3)
+            
+            # Plot 3: Latency per Token Distribution
+            if has_per_token and per_token_latencies:
+                ax_idx += 1
+                axs[ax_idx].hist(per_token_latencies, bins=30, alpha=0.7, color='purple')
+                axs[ax_idx].axvline(np.mean(per_token_latencies), color='red', linestyle='dashed', linewidth=1, 
+                                  label=f'Mean: {np.mean(per_token_latencies):.2f} ms/token')
+                axs[ax_idx].axvline(np.percentile(per_token_latencies, 90), color='blue', linestyle='dashed', linewidth=1,
+                                  label=f'p90: {np.percentile(per_token_latencies, 90):.2f} ms/token')
+                
+                axs[ax_idx].set_title('Latency per Token Distribution')
+                axs[ax_idx].set_xlabel('Latency per Token (ms/token)')
+                axs[ax_idx].set_ylabel('Number of Requests')
+                axs[ax_idx].legend()
+                axs[ax_idx].grid(True, alpha=0.3)
+            
+            plt.tight_layout()
+            plot_file = output_file.replace('.json', '_metrics.png')
             plt.savefig(plot_file)
-            print(f"Latency plot saved to {plot_file}")
+            print(f"Metrics plots saved to {plot_file}")
+            
+            # Add a scatter plot to show latency vs token count relationship
+            if "tokens_generated" in successful[0]:
+                tokens = [r["tokens_generated"] for r in successful]
+                
+                plt.figure(figsize=(10, 6))
+                plt.scatter(tokens, latencies, alpha=0.6)
+                
+                # Add trend line
+                if len(tokens) > 1:
+                    z = np.polyfit(tokens, latencies, 1)
+                    p = np.poly1d(z)
+                    plt.plot(tokens, p(tokens), "r--", alpha=0.8, 
+                             label=f"Trend: y={z[0]:.2f}x + {z[1]:.2f}")
+                
+                plt.title('Latency vs Token Count')
+                plt.xlabel('Number of Tokens Generated')
+                plt.ylabel('Latency (ms)')
+                plt.legend()
+                plt.grid(True, alpha=0.3)
+                
+                plot_file = output_file.replace('.json', '_latency_vs_tokens.png')
+                plt.savefig(plot_file)
+                print(f"Latency vs Tokens plot saved to {plot_file}")
             
         except Exception as e:
             print(f"Warning: Could not generate plots: {e}")
@@ -397,6 +563,8 @@ def main():
                         help="Model name")
     parser.add_argument("--prompt", type=str, default="San Francisco is a",
                         help="Prompt to use for testing")
+    parser.add_argument("--prompt_file", type=str, default=None,
+                        help="File containing prompts (one per line) to use for testing instead of a single prompt")
     parser.add_argument("--num_requests", type=int, default=100,
                         help="Total number of requests to send")
     parser.add_argument("--concurrency", type=int, default=10,
@@ -407,6 +575,8 @@ def main():
                         help="Sampling temperature")
     parser.add_argument("--output", type=str, default="load_test_results.json",
                         help="Output file for results")
+    parser.add_argument("--no_streaming", action="store_true",
+                        help="Disable streaming mode (won't measure TTFT accurately)")
     
     # GPU monitoring mode
     parser.add_argument("--monitor_gpu", action="store_true",
