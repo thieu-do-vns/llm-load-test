@@ -589,6 +589,33 @@ def main():
     
     # Test configuration
     parser.add_argument("--endpoint", type=str, default="http://localhost:8000/v1/completions", 
+                        help="API endpoint URL")
+    parser.add_argument("--model", type=str, 
+                        default="RedHatAI/Mistral-Small-3.1-24B-Instruct-2503-quantized.w4a16",
+                        help="Model name")
+    parser.add_argument("--prompt", type=str, default="San Francisco is a",
+                        help="Single prompt to use for testing (if prompt_file is not provided)")
+    parser.add_argument("--prompt_file", type=str, default=None,
+                        help="File containing prompts (one per line) to use for testing")
+    parser.add_argument("--num_requests", type=int, default=100,
+                        help="Total number of requests to send")
+    parser.add_argument("--concurrency", type=int, default=10,
+                        help="Number of concurrent requests")
+    parser.add_argument("--max_tokens", type=int, default=700,
+                        help="Maximum tokens to generate")
+    parser.add_argument("--temperature", type=float, default=0,
+                        help="Sampling temperature")
+    parser.add_argument("--output", type=str, default="load_test_results.json",
+                        help="Output file for results")
+    parser.add_argument("--no_streaming", action="store_true",
+                        help="Disable streaming mode (won't measure TTFT accurately)")
+    parser.add_argument("--sequential_prompts", action="store_true",
+                        help="Use prompts sequentially instead of randomly")
+    
+    # GPU monitoring mode
+    parser.add_argument("--monitor_gpu", action="store_true",
+                        help="Run in GPU monitoring mode only")
+    parser.add_argument("--interval", type=float, default=0.5,
                         help="GPU monitoring interval in seconds")
     
     args = parser.parse_args()
@@ -639,32 +666,6 @@ def main():
         use_random_prompts=not args.sequential_prompts
     )
 
+
 if __name__ == "__main__":
-    main()="API endpoint URL")
-    parser.add_argument("--model", type=str, 
-                        default="RedHatAI/Mistral-Small-3.1-24B-Instruct-2503-quantized.w4a16",
-                        help="Model name")
-    parser.add_argument("--prompt", type=str, default="San Francisco is a",
-                        help="Single prompt to use for testing (if prompt_file is not provided)")
-    parser.add_argument("--prompt_file", type=str, default=None,
-                        help="File containing prompts (one per line) to use for testing")
-    parser.add_argument("--num_requests", type=int, default=100,
-                        help="Total number of requests to send")
-    parser.add_argument("--concurrency", type=int, default=10,
-                        help="Number of concurrent requests")
-    parser.add_argument("--max_tokens", type=int, default=700,
-                        help="Maximum tokens to generate")
-    parser.add_argument("--temperature", type=float, default=0,
-                        help="Sampling temperature")
-    parser.add_argument("--output", type=str, default="load_test_results.json",
-                        help="Output file for results")
-    parser.add_argument("--no_streaming", action="store_true",
-                        help="Disable streaming mode (won't measure TTFT accurately)")
-    parser.add_argument("--sequential_prompts", action="store_true",
-                        help="Use prompts sequentially instead of randomly")
-    
-    # GPU monitoring mode
-    parser.add_argument("--monitor_gpu", action="store_true",
-                        help="Run in GPU monitoring mode only")
-    parser.add_argument("--interval", type=float, default=0.5,
-                        help
+    main()
