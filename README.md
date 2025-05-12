@@ -9,10 +9,10 @@ This tool provides comprehensive load testing for LLM APIs with the following fe
 
 ***Usage:***
 1. Run the load test with cache:
-   python llm_load_test.py --num_requests 200 --concurrency 20
+   python3 llm_load_test_cache.py --num_requests 200 --concurrency 20
    
 3. Run in seperate prompts
-   python llm_load_test_from_file.py --prompt_file prompts.txt --num_requests 200 --concurrency 20 --output results.json
+   python3 llm_load_test_from_file.py --prompt_file prompts.txt --num_requests 200 --concurrency 20 --output results.json --sequential_prompts
 
 4. For GPU monitoring (on the server):
    python llm_load_test.py --monitor_gpu --interval 0.5
