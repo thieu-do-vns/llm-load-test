@@ -27,9 +27,6 @@ class GPUMetrics:
     utilization: int  # GPU utilization percentage
     memory_used: int  # Memory used in MB
     memory_total: int  # Total memory in MB
-    temperature: int  # Temperature in Celsius
-    power_usage: float  # Power usage in Watts
-    power_limit: float  # Power limit in Watts
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -39,11 +36,7 @@ class GPUMetrics:
             "utilization": self.utilization,
             "memory_used_mb": self.memory_used,
             "memory_total_mb": self.memory_total,
-            "memory_used_percent": (self.memory_used / self.memory_total * 100) if self.memory_total > 0 else 0,
-            "temperature_c": self.temperature,
-            "power_usage_watts": self.power_usage,
-            "power_limit_watts": self.power_limit,
-            "power_usage_percent": (self.power_usage / self.power_limit * 100) if self.power_limit > 0 else 0
+            "memory_used_percent": (self.memory_used / self.memory_total * 100) if self.memory_total > 0 else 0
         }
 
 @dataclass
@@ -108,22 +101,12 @@ class GPUMonitor:
                 mem_used = memory.used // 1024 // 1024  # Convert to MB
                 mem_total = memory.total // 1024 // 1024  # Convert to MB
                 
-                # Get temperature
-                temp = pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU)
-                
-                # Get power usage
-                power_usage = pynvml.nvmlDeviceGetPowerUsage(handle) / 1000.0  # Convert from mW to W
-                power_limit = pynvml.nvmlDeviceGetPowerManagementLimit(handle) / 1000.0  # Convert from mW to W
-                
                 current_metrics.append(GPUMetrics(
                     timestamp=time.time(),
                     gpu_id=i,
                     utilization=gpu_util,
                     memory_used=mem_used,
-                    memory_total=mem_total,
-                    temperature=temp,
-                    power_usage=power_usage,
-                    power_limit=power_limit
+                    memory_total=mem_total
                 ))
             except Exception as e:
                 print(f"Error collecting metrics for GPU {i}: {e}")
@@ -172,8 +155,6 @@ class GPUMonitor:
             
             utilization = [m.utilization for m in gpu_metrics]
             memory_used_percent = [(m.memory_used / m.memory_total * 100) if m.memory_total > 0 else 0 for m in gpu_metrics]
-            temperature = [m.temperature for m in gpu_metrics]
-            power_usage = [m.power_usage for m in gpu_metrics]
             
             summary[f"gpu_{gpu_id}"] = {
                 "utilization_percent": {
@@ -189,18 +170,6 @@ class GPUMonitor:
                     "mean": statistics.mean(memory_used_percent),
                     "median": statistics.median(memory_used_percent),
                     "p95": sorted(memory_used_percent)[int(len(memory_used_percent)*0.95)] if len(memory_used_percent) > 20 else max(memory_used_percent)
-                },
-                "temperature_c": {
-                    "min": min(temperature),
-                    "max": max(temperature),
-                    "mean": statistics.mean(temperature),
-                    "median": statistics.median(temperature)
-                },
-                "power_usage_watts": {
-                    "min": min(power_usage),
-                    "max": max(power_usage),
-                    "mean": statistics.mean(power_usage),
-                    "median": statistics.median(power_usage)
                 }
             }
         
@@ -395,16 +364,6 @@ class LLMLoadTester:
                 print(f"    Max: {metrics['memory_used_percent']['max']:.2f}")
                 print(f"    Mean: {metrics['memory_used_percent']['mean']:.2f}")
                 print(f"    P95: {metrics['memory_used_percent']['p95']:.2f}")
-                
-                print("  Temperature (°C):")
-                print(f"    Min: {metrics['temperature_c']['min']}")
-                print(f"    Max: {metrics['temperature_c']['max']}")
-                print(f"    Mean: {metrics['temperature_c']['mean']:.2f}")
-                
-                print("  Power Usage (W):")
-                print(f"    Min: {metrics['power_usage_watts']['min']:.2f}")
-                print(f"    Max: {metrics['power_usage_watts']['max']:.2f}")
-                print(f"    Mean: {metrics['power_usage_watts']['mean']:.2f}")
         
         if failed_requests:
             print("\n==== ERROR SUMMARY ====")
